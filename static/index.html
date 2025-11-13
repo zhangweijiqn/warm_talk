@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WarmTalk - 温暖对话助手</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 900px;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            height: 90vh;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 20px 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 24px;
+            margin-bottom: 5px;
+        }
+
+        .header p {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+
+        .chat-container {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px;
+            background: #f5f7fa;
+        }
+
+        .message {
+            margin-bottom: 20px;
+            display: flex;
+            animation: fadeIn 0.3s ease-in;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .message.user {
+            justify-content: flex-end;
+        }
+
+        .message.assistant {
+            justify-content: flex-start;
+        }
+
+        .message-content {
+            max-width: 70%;
+            padding: 12px 18px;
+            border-radius: 18px;
+            word-wrap: break-word;
+            line-height: 1.6;
+        }
+
+        .message.user .message-content {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-bottom-right-radius: 4px;
+        }
+
+        .message.assistant .message-content {
+            background: white;
+            color: #333;
+            border: 1px solid #e0e0e0;
+            border-bottom-left-radius: 4px;
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        }
+
+        .thinking {
+            background: #f0f4ff;
+            border-left: 3px solid #667eea;
+            padding: 12px 15px;
+            margin-bottom: 10px;
+            border-radius: 8px;
+            font-size: 13px;
+            color: #555;
+            font-style: italic;
+        }
+
+        .thinking::before {
+            content: "💭 思考：";
+            font-weight: bold;
+            color: #667eea;
+        }
+
+        .input-container {
+            padding: 20px;
+            background: white;
+            border-top: 1px solid #e0e0e0;
+            display: flex;
+            gap: 10px;
+        }
+
+        .input-wrapper {
+            flex: 1;
+            position: relative;
+        }
+
+        #messageInput {
+            width: 100%;
+            padding: 12px 50px 12px 15px;
+            border: 2px solid #e0e0e0;
+            border-radius: 25px;
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.3s;
+        }
+
+        #messageInput:focus {
+            border-color: #667eea;
+        }
+
+        #sendButton {
+            position: absolute;
+            right: 5px;
+            top: 50%;
+            transform: translateY(-50%);
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: transform 0.2s;
+        }
+
+        #sendButton:hover {
+            transform: translateY(-50%) scale(1.1);
+        }
+
+        #sendButton:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .controls {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 20px;
+            cursor: pointer;
+            font-size: 13px;
+            transition: all 0.3s;
+        }
+
+        .btn-clear {
+            background: #ff6b6b;
+            color: white;
+        }
+
+        .btn-clear:hover {
+            background: #ff5252;
+        }
+
+        .status {
+            text-align: center;
+            padding: 10px;
+            font-size: 12px;
+            color: #666;
+        }
+
+        .status.error {
+            color: #ff6b6b;
+        }
+
+        .status.success {
+            color: #51cf66;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🤗 WarmTalk</h1>
+            <p>你的倾听者和安慰者</p>
+        </div>
+        
+        <div class="controls" style="padding: 10px 20px; background: white; border-bottom: 1px solid #e0e0e0;">
+            <button class="btn btn-clear" onclick="clearHistory()">清空对话</button>
+            <div class="status" id="status"></div>
+        </div>
+        
+        <!-- 进度显示 -->
+        <div id="progressContainer" style="display: none; padding: 10px 20px; background: #f5f5f5; border-bottom: 1px solid #e0e0e0;">
+            <div style="display: flex; align-items: center; gap: 15px;">
+                <div style="flex: 1;">
+                    <div style="display: flex; justify-content: space-between; margin-bottom: 5px; font-size: 12px; color: #666;">
+                        <span id="progressText">正在生成回复...</span>
+                        <span id="progressPercent">0%</span>
+                    </div>
+                    <div style="width: 100%; height: 8px; background: #e0e0e0; border-radius: 4px; overflow: hidden;">
+                        <div id="progressBar" style="width: 0%; height: 100%; background: linear-gradient(90deg, #667eea 0%, #764ba2 100%); transition: width 0.3s ease;"></div>
+                    </div>
+                </div>
+                <div id="progressDetails" style="font-size: 11px; color: #999; white-space: nowrap;">
+                    <span id="progressSpeed">-</span> | <span id="progressTime">-</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="chat-container" id="chatContainer">
+            <div class="message assistant">
+                <div class="message-content">
+                    你好！我是你的AI助手，我会认真倾听你的每一句话，理解你的情感，并给予温暖的支持。有什么想和我聊的吗？😊
+                </div>
+            </div>
+        </div>
+
+        <div class="input-container">
+            <div class="input-wrapper">
+                <input 
+                    type="text" 
+                    id="messageInput" 
+                    placeholder="输入你的消息..." 
+                    onkeypress="handleKeyPress(event)"
+                >
+                <button id="sendButton" onclick="sendMessage()">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="22" y1="2" x2="11" y2="13"></line>
+                        <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                    </svg>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let sessionId = null;
+        let isLoading = false;
+        let healthCheckInterval = 60000; // 默认60秒
+
+        // 获取配置
+        async function loadConfig() {
+            try {
+                const response = await fetch('/api/config');
+                const config = await response.json();
+                healthCheckInterval = config.health_check_interval || 60000;
+                console.log(`[前端] 配置加载完成，健康检查间隔: ${healthCheckInterval / 1000}秒`);
+            } catch (error) {
+                console.warn('[前端] 配置加载失败，使用默认值:', error);
+            }
+        }
+
+        // 检查服务状态
+        async function checkHealth() {
+            try {
+                const checkTime = new Date().toLocaleTimeString('zh-CN');
+                console.log(`[前端] [${checkTime}] 检查服务状态...`);
+                const response = await fetch('/health');
+                const data = await response.json();
+                console.log(`[前端] [${checkTime}] 健康检查结果:`, data);
+                
+                if (data.status === 'ok' && data.model_loaded) {
+                    updateStatus(`服务就绪 - ${data.model_name || '模型已加载'}`, 'success');
+                } else {
+                    updateStatus('模型加载中，请稍候...', 'error');
+                }
+            } catch (error) {
+                const errorTime = new Date().toLocaleTimeString('zh-CN');
+                console.error(`[前端] [${errorTime}] 健康检查失败:`, error);
+                updateStatus('无法连接到服务器', 'error');
+            }
+        }
+
+        function updateStatus(message, type = '') {
+            const statusEl = document.getElementById('status');
+            statusEl.textContent = message;
+            statusEl.className = 'status ' + type;
+        }
+
+        function handleKeyPress(event) {
+            if (event.key === 'Enter' && !event.shiftKey) {
+                event.preventDefault();
+                sendMessage();
+            }
+        }
+
+        async function sendMessage() {
+            const input = document.getElementById('messageInput');
+            const message = input.value.trim();
+            
+            if (!message || isLoading) return;
+
+            // 显示用户消息
+            addMessage(message, 'user');
+            input.value = '';
+            setLoading(true);
+            updateStatus('正在生成回复，请稍候...', '');
+            showProgress(true);
+            
+            // 开始进度轮询
+            let progressInterval = setInterval(updateProgress, 1000); // 每秒更新一次进度
+
+            const startTime = Date.now();
+            const timeout = 300000; // 5分钟超时
+
+            try {
+                console.log('[前端] 发送消息:', message);
+                console.log('[前端] 会话ID:', sessionId);
+                
+                // 创建带超时的 fetch 请求
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), timeout);
+                
+                const response = await fetch('/api/chat', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        message: message,
+                        session_id: sessionId,
+                        use_chain_of_thought: true
+                    }),
+                    signal: controller.signal
+                });
+
+                clearTimeout(timeoutId);
+                const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+                console.log(`[前端] 收到响应，耗时: ${elapsed} 秒`);
+
+                if (!response.ok) {
+                    const errorData = await response.json().catch(() => ({ detail: response.statusText }));
+                    throw new Error(errorData.detail || `HTTP ${response.status}`);
+                }
+
+                const data = await response.json();
+                console.log('[前端] 响应数据:', data);
+                
+                if (!sessionId) {
+                    sessionId = data.session_id;
+                    console.log('[前端] 新会话ID:', sessionId);
+                }
+
+                // 显示思考过程（如果有）
+                if (data.thinking) {
+                    console.log('[前端] 显示思考过程');
+                    addThinking(data.thinking);
+                }
+
+                // 停止进度轮询
+                clearInterval(progressInterval);
+                showProgress(false);
+                
+                // 显示助手回复
+                console.log('[前端] 显示助手回复，长度:', data.response.length);
+                addMessage(data.response, 'assistant');
+                updateStatus('服务就绪', 'success');
+                
+            } catch (error) {
+                // 停止进度轮询
+                if (typeof progressInterval !== 'undefined') {
+                    clearInterval(progressInterval);
+                }
+                showProgress(false);
+                
+                const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+                console.error('[前端] 错误详情:', error);
+                console.error('[前端] 错误类型:', error.name);
+                console.error('[前端] 错误消息:', error.message);
+                
+                let errorMessage = '抱歉，发生了错误。';
+                
+                if (error.name === 'AbortError') {
+                    errorMessage = '请求超时（超过5分钟）。模型生成可能需要更长时间，请检查服务器日志。';
+                    updateStatus('请求超时', 'error');
+                } else if (error.message.includes('503')) {
+                    errorMessage = '模型未加载，请等待模型加载完成后再试。';
+                    updateStatus('模型未就绪', 'error');
+                } else if (error.message.includes('500')) {
+                    errorMessage = '服务器内部错误，请查看服务器日志获取详细信息。';
+                    updateStatus('服务器错误', 'error');
+                } else if (error.message.includes('Failed to fetch')) {
+                    errorMessage = '无法连接到服务器，请检查服务器是否运行。';
+                    updateStatus('连接失败', 'error');
+                } else {
+                    errorMessage = `错误: ${error.message}`;
+                    updateStatus('发生错误', 'error');
+                }
+                
+                addMessage(errorMessage, 'assistant');
+                console.error(`[前端] 请求失败，总耗时: ${elapsed} 秒`);
+            } finally {
+                setLoading(false);
+            }
+        }
+        
+        // 显示/隐藏进度条
+        function showProgress(show) {
+            const container = document.getElementById('progressContainer');
+            if (show) {
+                container.style.display = 'block';
+            } else {
+                container.style.display = 'none';
+                // 重置进度
+                document.getElementById('progressBar').style.width = '0%';
+                document.getElementById('progressPercent').textContent = '0%';
+                document.getElementById('progressText').textContent = '正在生成回复...';
+                document.getElementById('progressSpeed').textContent = '-';
+                document.getElementById('progressTime').textContent = '-';
+            }
+        }
+        
+        // 更新进度信息
+        async function updateProgress() {
+            try {
+                const response = await fetch('/api/progress');
+                const data = await response.json();
+                
+                if (data.is_generating) {
+                    // 更新进度条
+                    const progressBar = document.getElementById('progressBar');
+                    const progressPercent = document.getElementById('progressPercent');
+                    const progressText = document.getElementById('progressText');
+                    const progressSpeed = document.getElementById('progressSpeed');
+                    const progressTime = document.getElementById('progressTime');
+                    
+                    const percent = Math.min(100, data.progress_percent);
+                    progressBar.style.width = percent + '%';
+                    progressPercent.textContent = percent.toFixed(1) + '%';
+                    
+                    // 更新详细信息
+                    if (data.current_tokens > 0) {
+                        progressText.textContent = `已生成 ${data.current_tokens}/${data.max_tokens} tokens`;
+                        progressSpeed.textContent = `${data.tokens_per_second.toFixed(2)} tokens/秒`;
+                        
+                        const elapsed = data.elapsed_time.toFixed(1);
+                        if (data.estimated_remaining > 0) {
+                            const remaining = data.estimated_remaining.toFixed(1);
+                            progressTime.textContent = `已用时: ${elapsed}秒 | 预计剩余: ${remaining}秒`;
+                        } else {
+                            progressTime.textContent = `已用时: ${elapsed}秒`;
+                        }
+                    }
+                } else {
+                    // 生成完成，隐藏进度条
+                    showProgress(false);
+                }
+            } catch (error) {
+                // 静默失败，不影响主流程
+                console.warn('[前端] 获取进度失败:', error);
+            }
+        }
+
+        function addMessage(text, type) {
+            const container = document.getElementById('chatContainer');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${type}`;
+            
+            const contentDiv = document.createElement('div');
+            contentDiv.className = 'message-content';
+            contentDiv.textContent = text;
+            
+            messageDiv.appendChild(contentDiv);
+            container.appendChild(messageDiv);
+            
+            // 滚动到底部
+            container.scrollTop = container.scrollHeight;
+        }
+
+        function addThinking(text) {
+            const container = document.getElementById('chatContainer');
+            const thinkingDiv = document.createElement('div');
+            thinkingDiv.className = 'thinking';
+            thinkingDiv.textContent = text;
+            container.appendChild(thinkingDiv);
+            container.scrollTop = container.scrollHeight;
+        }
+
+        function setLoading(loading) {
+            isLoading = loading;
+            const button = document.getElementById('sendButton');
+            const input = document.getElementById('messageInput');
+            
+            if (loading) {
+                button.innerHTML = '<div class="loading"></div>';
+                button.disabled = true;
+                input.disabled = true;
+            } else {
+                button.innerHTML = `
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="22" y1="2" x2="11" y2="13"></line>
+                        <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+                    </svg>
+                `;
+                button.disabled = false;
+                input.disabled = false;
+                input.focus();
+            }
+        }
+
+        async function clearHistory() {
+            if (!sessionId) return;
+            
+            try {
+                await fetch('/api/clear', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ session_id: sessionId })
+                });
+                
+                const container = document.getElementById('chatContainer');
+                container.innerHTML = `
+                    <div class="message assistant">
+                        <div class="message-content">
+                            对话历史已清空。有什么想和我聊的吗？😊
+                        </div>
+                    </div>
+                `;
+                
+                sessionId = null;
+            } catch (error) {
+                console.error('Error clearing history:', error);
+            }
+        }
+
+        // 页面加载时加载配置并检查服务状态
+        (async function init() {
+            await loadConfig();
+            checkHealth();
+            setInterval(checkHealth, healthCheckInterval);
+        })();
+    </script>
+</body>
+</html>
+

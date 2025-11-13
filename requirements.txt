@@ -1,0 +1,15 @@
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+transformers>=4.37.0  # 需要 4.37+ 以支持 Qwen2.5
+torch==2.2.0
+accelerate==0.24.1
+sentencepiece==0.2.1
+protobuf==3.20.3
+pydantic==2.5.0
+python-multipart==0.0.6
+numpy<2.0.0  # 限制 NumPy 版本为 1.x，避免与 PyTorch 兼容性问题
+
+# 可选依赖（用于 GPU 量化，CPU 模式不需要）
+# bitsandbytes  # 如果使用 GPU 并想启用 4-bit/8-bit 量化，取消注释此行
+# 安装命令: pip install bitsandbytes
+
