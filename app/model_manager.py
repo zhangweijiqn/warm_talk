@@ -2,7 +2,8 @@
 模型管理器 - 负责加载和运行中文对话模型
 """
 import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModel
+from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModel, TextIteratorStreamer
+from threading import Thread
 import logging
 from typing import Optional, List, Dict, Tuple
 from config.model_config import (
@@ -13,6 +14,7 @@ from config.model_config import (
     AUTO_ADJUST_FOR_CPU,
     CPU_MAX_NEW_TOKENS_LIMIT,
     CPU_SMALL_MODEL_MAX_TOKENS,
+    USE_OFFLINE_MODE,
 )
 import threading
 import time
@@ -77,10 +79,13 @@ class ModelManager:
             
             # 加载分词器
             logger.info("正在加载分词器...")
+            if USE_OFFLINE_MODE:
+                logger.info("⚠️ 离线模式：只使用本地缓存的模型，不会从网络下载")
             tokenizer_start = time.time()
             self.tokenizer = AutoTokenizer.from_pretrained(
                 self.model_name,
-                trust_remote_code=True
+                trust_remote_code=True,
+                local_files_only=USE_OFFLINE_MODE
             )
             tokenizer_time = time.time() - tokenizer_start
             logger.info(f"分词器加载完成，耗时: {tokenizer_time:.2f} 秒")
@@ -131,6 +136,7 @@ class ModelManager:
                     load_kwargs["torch_dtype"] = torch.float16 if self.device == "cuda" else torch.float32
                     load_kwargs["device_map"] = "auto" if self.device == "cuda" else None
                 
+                load_kwargs["local_files_only"] = USE_OFFLINE_MODE
                 self.model = AutoModel.from_pretrained(
                     self.model_name,
                     **load_kwargs
@@ -149,6 +155,7 @@ class ModelManager:
                     load_kwargs["torch_dtype"] = torch.float16 if self.device == "cuda" else torch.float32
                     load_kwargs["device_map"] = "auto" if self.device == "cuda" else None
                 
+                load_kwargs["local_files_only"] = USE_OFFLINE_MODE
                 self.model = AutoModelForCausalLM.from_pretrained(
                     self.model_name,
                     **load_kwargs
@@ -556,4 +563,210 @@ class ModelManager:
     def is_loaded(self) -> bool:
         """检查模型是否已加载"""
         return self.model is not None and self.tokenizer is not None
+    
+    def generate_thinking_stream(
+        self,
+        prompt: str,
+        history: Optional[List[Tuple[str, str]]] = None,
+        system_prompt: Optional[str] = None
+    ):
+        """
+        生成思考过程（流式）
+        
+        Args:
+            prompt: 用户输入
+            history: 对话历史
+            system_prompt: 系统提示词
+            
+        Yields:
+            生成的文本片段
+        """
+        from app.prompt_builder import PromptBuilder
+        
+        if self.model is None or self.tokenizer is None:
+            raise RuntimeError("模型未加载，请先调用 load_model()")
+        
+        # 构建思考提示词（只要求生成思考过程，不生成正式回答）
+        has_history = len(history) > 0 if history else False
+        thinking_prompt = PromptBuilder.get_thinking_template(has_history=has_history)
+        # 只要求生成思考过程（不添加"思考过程："标记，直接开始思考内容）
+        thinking_request = f"{prompt}\n\n{thinking_prompt}\n\n"
+        
+        # 根据模型类型生成（思考过程不使用 system_prompt，只进行纯分析）
+        if "chatglm" in self.model_name.lower():
+            # ChatGLM 系列（思考过程不使用 system_prompt）
+            full_prompt = thinking_request
+            
+            chat_config = GENERATION_CONFIG.copy()
+            chat_config.pop("max_length", None)
+            chat_config["max_new_tokens"] = min(chat_config.get("max_new_tokens", 512), 256)  # 思考过程限制长度
+            
+            # 使用流式生成
+            import warnings
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=UserWarning)
+                with torch.no_grad():
+                    last_response = ""
+                    for response, _ in self.model.stream_chat(
+                        self.tokenizer,
+                        thinking_request if history else full_prompt,
+                        history=history or [],
+                        **chat_config
+                    ):
+                        if response and response != last_response:
+                            new_text = response[len(last_response):] if last_response else response
+                            if new_text:
+                                yield new_text
+                            last_response = response
+        else:
+            # 其他模型 - 使用 TextIteratorStreamer 实现真正的流式输出（思考过程不使用 system_prompt）
+            messages = []
+            # 思考过程不使用 system_prompt，只进行纯分析
+            if history:
+                for user_msg, assistant_msg in history:
+                    messages.append({"role": "user", "content": user_msg})
+                    messages.append({"role": "assistant", "content": assistant_msg})
+            messages.append({"role": "user", "content": thinking_request})
+            
+            text = self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True
+            )
+            
+            inputs = self.tokenizer.encode(text, return_tensors="pt").to(self.device)
+            
+            gen_config = GENERATION_CONFIG.copy()
+            gen_config["max_new_tokens"] = min(gen_config.get("max_new_tokens", 512), 256)
+            
+            # 停止标记，防止生成正式回答
+            stop_tokens = ["**正式回答：**", "**正式回答**", "\n\n**正式回答"]
+            
+            # 创建流式生成器
+            streamer = TextIteratorStreamer(
+                self.tokenizer,
+                skip_prompt=True,
+                skip_special_tokens=True
+            )
+            
+            gen_kwargs = {
+                **gen_config,
+                "input_ids": inputs,
+                "streamer": streamer
+            }
+            
+            # 在单独线程中运行生成
+            generation_thread = Thread(target=self.model.generate, kwargs=gen_kwargs)
+            generation_thread.start()
+            
+            # 流式返回生成的文本，遇到停止标记时停止
+            accumulated_text = ""
+            for text in streamer:
+                if text:
+                    accumulated_text += text
+                    # 检查是否遇到停止标记
+                    if any(stop in accumulated_text for stop in stop_tokens):
+                        # 移除停止标记后的内容
+                        for stop in stop_tokens:
+                            if stop in accumulated_text:
+                                accumulated_text = accumulated_text.split(stop)[0]
+                                break
+                        if accumulated_text:
+                            yield accumulated_text
+                        break
+                    yield text
+    
+    def generate_answer_stream(
+        self,
+        prompt: str,
+        thinking: str,
+        history: Optional[List[Tuple[str, str]]] = None,
+        system_prompt: Optional[str] = None
+    ):
+        """
+        生成正式回答（流式），基于思考过程
+        
+        Args:
+            prompt: 用户输入
+            thinking: 思考过程
+            history: 对话历史
+            system_prompt: 系统提示词
+            
+        Yields:
+            生成的文本片段
+        """
+        if self.model is None or self.tokenizer is None:
+            raise RuntimeError("模型未加载，请先调用 load_model()")
+        
+        # 构建回答提示词（包含思考过程和 system prompt）
+        from app.prompt_builder import PromptBuilder
+        answer_template = PromptBuilder.get_answer_template()
+        answer_request = f"{prompt}\n\n**思考过程：**\n{thinking}\n\n{answer_template}\n\n**正式回答：**\n"
+        
+        if "chatglm" in self.model_name.lower():
+            # ChatGLM 系列
+            if system_prompt:
+                full_prompt = f"{system_prompt}\n\n用户：{answer_request}\n助手："
+            else:
+                full_prompt = answer_request
+            
+            chat_config = GENERATION_CONFIG.copy()
+            chat_config.pop("max_length", None)
+            
+            import warnings
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", category=UserWarning)
+                with torch.no_grad():
+                    last_response = ""
+                    for response, _ in self.model.stream_chat(
+                        self.tokenizer,
+                        answer_request if history else full_prompt,
+                        history=history or [],
+                        **chat_config
+                    ):
+                        if response and response != last_response:
+                            new_text = response[len(last_response):] if last_response else response
+                            if new_text:
+                                yield new_text
+                            last_response = response
+        else:
+            # 其他模型 - 使用 TextIteratorStreamer 实现真正的流式输出
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            if history:
+                for user_msg, assistant_msg in history:
+                    messages.append({"role": "user", "content": user_msg})
+                    messages.append({"role": "assistant", "content": assistant_msg})
+            messages.append({"role": "user", "content": answer_request})
+            
+            text = self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True
+            )
+            
+            inputs = self.tokenizer.encode(text, return_tensors="pt").to(self.device)
+            
+            # 创建流式生成器
+            streamer = TextIteratorStreamer(
+                self.tokenizer,
+                skip_prompt=True,
+                skip_special_tokens=True
+            )
+            
+            gen_kwargs = {
+                **GENERATION_CONFIG,
+                "input_ids": inputs,
+                "streamer": streamer
+            }
+            
+            # 在单独线程中运行生成
+            generation_thread = Thread(target=self.model.generate, kwargs=gen_kwargs)
+            generation_thread.start()
+            
+            # 流式返回生成的文本
+            for text in streamer:
+                if text:
+                    yield text
 

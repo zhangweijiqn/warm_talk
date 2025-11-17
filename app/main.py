@@ -4,7 +4,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from contextlib import asynccontextmanager
 from pydantic import BaseModel
 from typing import Optional, List
@@ -12,6 +12,8 @@ import logging
 import uuid
 import os
 import sys
+import json
+import asyncio
 
 from app.model_manager import ModelManager
 from app.conversation_manager import ConversationManager
@@ -45,35 +47,37 @@ def extract_thinking(response: str) -> Optional[str]:
         return None
     
     # 模式1: **思考过程：** ... **正式回答：**（最标准格式）
-    pattern1 = r'\*\*思考过程：?\*\*[\s\n]*(.*?)[\s\n]*\*\*正式回答：?\*\*'
+    # 使用更精确的匹配，确保不会包含正式回答的内容
+    pattern1 = r'\*\*思考过程：?\*\*[\s\n]*(.*?)(?=[\s\n]*\*\*正式回答：?\*\*)'
     match = re.search(pattern1, response, re.DOTALL | re.IGNORECASE)
     if match:
         thinking = match.group(1).strip()
-        if thinking and len(thinking) > 5:  # 确保不是空内容
+        # 确保思考内容不包含"正式回答"标记
+        if thinking and len(thinking) > 5 and '正式回答' not in thinking and '**正式回答' not in thinking:
             return thinking
     
     # 模式1.1: **思考过程** ... **正式回答**（无冒号变体）
-    pattern1_1 = r'\*\*思考过程\*\*[\s\n]*(.*?)[\s\n]*\*\*正式回答\*\*'
+    pattern1_1 = r'\*\*思考过程\*\*[\s\n]*(.*?)(?=[\s\n]*\*\*正式回答\*\*)'
     match = re.search(pattern1_1, response, re.DOTALL | re.IGNORECASE)
     if match:
         thinking = match.group(1).strip()
-        if thinking and len(thinking) > 5:
+        if thinking and len(thinking) > 5 and '正式回答' not in thinking:
             return thinking
     
     # 模式2: 思考过程： ... 正式回答：（无星号格式）
-    pattern2 = r'思考过程：?[\s\n]+(.*?)[\s\n]+正式回答：?'
+    pattern2 = r'思考过程：?[\s\n]+(.*?)(?=[\s\n]+正式回答：?)'
     match = re.search(pattern2, response, re.DOTALL | re.IGNORECASE)
     if match:
         thinking = match.group(1).strip()
-        if thinking and len(thinking) > 5:
+        if thinking and len(thinking) > 5 and '正式回答' not in thinking:
             return thinking
     
     # 模式2.1: 思考过程 ... 正式回答（无冒号）
-    pattern2_1 = r'思考过程[\s\n]+(.*?)[\s\n]+正式回答'
+    pattern2_1 = r'思考过程[\s\n]+(.*?)(?=[\s\n]+正式回答)'
     match = re.search(pattern2_1, response, re.DOTALL | re.IGNORECASE)
     if match:
         thinking = match.group(1).strip()
-        if thinking and len(thinking) > 5:
+        if thinking and len(thinking) > 5 and '正式回答' not in thinking:
             return thinking
     
     # 模式3: 思考： ... 回答：（简化格式）
@@ -188,30 +192,107 @@ def extract_thinking_relaxed(response: str) -> Optional[str]:
 def remove_thinking_from_response(response: str, thinking: str) -> str:
     """
     从回复中移除思考部分，只保留正式回答
+    改进版：更准确地识别边界，避免截断句子
     """
     if not thinking:
         return response
     
-    # 尝试多种方式移除思考部分
-    # 方法1: 移除思考过程标记和内容
+    # 方法1: 尝试通过标记找到正式回答的开始位置
+    answer_markers = [
+        r'\*\*正式回答：?\*\*',
+        r'正式回答：?',
+        r'\*\*回答：?\*\*',
+        r'回答：?',
+    ]
+    
+    answer_start_pos = -1
+    for marker in answer_markers:
+        match = re.search(marker, response, re.IGNORECASE)
+        if match:
+            answer_start_pos = match.end()
+            break
+    
+    # 方法2: 如果找到了正式回答标记，从标记后开始提取
+    if answer_start_pos > 0:
+        answer = response[answer_start_pos:].strip()
+        # 清理开头的空行和标记残留
+        answer = re.sub(r'^[\s\n]+', '', answer)
+        # 只清理开头的句号，其他标点保留（可能是回答的一部分）
+        answer = re.sub(r'^[。\s]+', '', answer)
+        # 如果清理后为空或太短，尝试查找第一个中文字符或英文字母
+        if not answer or len(answer) < 3:
+            first_char_match = re.search(r'[A-Za-z\u4e00-\u9fa5]', response[answer_start_pos:])
+            if first_char_match:
+                answer = response[answer_start_pos + first_char_match.start():].strip()
+        return answer
+    
+    # 方法3: 如果思考内容在回复中，找到它的结束位置
+    thinking_pos = response.find(thinking)
+    if thinking_pos >= 0:
+        # 从思考内容结束后开始查找正式回答
+        after_thinking = response[thinking_pos + len(thinking):].strip()
+        
+        # 查找正式回答标记
+        for marker in answer_markers:
+            match = re.search(marker, after_thinking, re.IGNORECASE)
+            if match:
+                answer = after_thinking[match.end():].strip()
+                # 清理开头的空行
+                answer = re.sub(r'^[\s\n]+', '', answer)
+                # 只清理开头的句号，其他标点保留（可能是回答的一部分）
+                answer = re.sub(r'^[。\s]+', '', answer)
+                # 如果清理后为空或太短，尝试查找第一个中文字符或英文字母
+                if not answer or len(answer) < 3:
+                    first_char_match = re.search(r'[A-Za-z\u4e00-\u9fa5]', after_thinking[match.end():])
+                    if first_char_match:
+                        answer = after_thinking[match.end() + first_char_match.start():].strip()
+                return answer
+        
+        # 如果没有找到标记，尝试找到第一个中文字符或英文字母开始的位置
+        first_char_match = re.search(r'[A-Za-z\u4e00-\u9fa5]', after_thinking)
+        if first_char_match:
+            answer = after_thinking[first_char_match.start():].strip()
+            # 如果答案太短，可能不是完整的回答，返回原回复
+            if len(answer) < 10:
+                return response
+            return answer
+    
+    # 方法4: 如果以上都失败，尝试通过正则表达式移除思考部分
     patterns = [
         r'\*\*思考过程：?\*\*[\s\n]*.*?[\s\n]*\*\*正式回答：?\*\*',
-        r'思考过程：?[\s\n]*.*?[\s\n]*正式回答：?',
-        r'思考：?[\s\n]*.*?[\s\n]*回答：?',
+        r'思考过程：?[\s\n]*.*?[\s\n]+正式回答：?',
+        r'思考：?[\s\n]*.*?[\s\n]+回答：?',
         r'\[思考过程?\]?[\s\n]*.*?[\s\n]*\[正式回答?\]?',
     ]
     
     for pattern in patterns:
-        response = re.sub(pattern, '', response, flags=re.DOTALL | re.IGNORECASE)
-    
-    # 方法2: 如果思考内容在回复中，直接移除
-    if thinking in response:
-        response = response.replace(thinking, '').strip()
+        match = re.search(pattern, response, re.DOTALL | re.IGNORECASE)
+        if match:
+            # 找到匹配后，提取正式回答部分
+            full_match = match.group(0)
+            # 查找正式回答标记在匹配中的位置
+            for marker in answer_markers:
+                marker_match = re.search(marker, full_match, re.IGNORECASE)
+                if marker_match:
+                    answer = full_match[marker_match.end():].strip()
+                    # 只清理开头的句号，其他标点保留（可能是回答的一部分）
+                    answer = re.sub(r'^[。\s]+', '', answer)
+                    # 如果清理后为空或太短，尝试查找第一个中文字符或英文字母
+                    if not answer or len(answer) < 3:
+                        first_char_match = re.search(r'[A-Za-z\u4e00-\u9fa5]', full_match[marker_match.end():])
+                        if first_char_match:
+                            answer = full_match[marker_match.end() + first_char_match.start():].strip()
+                    # 替换原回复中的匹配部分为答案部分
+                    response = response.replace(full_match, answer, 1)
+                    break
     
     # 清理多余的空行和标记
     response = re.sub(r'\*\*正式回答：?\*\*', '', response, flags=re.IGNORECASE)
     response = re.sub(r'正式回答：?', '', response, flags=re.IGNORECASE)
     response = re.sub(r'\n\s*\n\s*\n+', '\n\n', response)  # 清理多余空行
+    
+    # 最后只清理开头的句号，其他标点保留
+    response = re.sub(r'^[。\s]+', '', response.strip())
     
     return response.strip()
 
@@ -374,7 +455,7 @@ async def chat(request: ChatRequest):
     try:
         # 构建提示词
         logger.debug("开始构建提示词...")
-        system_prompt = PromptBuilder.SYSTEM_PROMPT
+        system_prompt = PromptBuilder.get_system_prompt()
         
         # 如果启用思考链路，添加思考提示
         if request.use_chain_of_thought:
@@ -419,13 +500,21 @@ async def chat(request: ChatRequest):
         if request.use_chain_of_thought:
             logger.debug("尝试提取思考过程...")
             logger.debug(f"原始回复长度: {len(response)} 字符")
-            logger.debug(f"原始回复预览: {response[:300]}..." if len(response) > 300 else f"原始回复: {response}")
+            logger.debug(f"原始回复预览: {response[:500]}..." if len(response) > 500 else f"原始回复: {response}")
             thinking = extract_thinking(response)
             if thinking:
                 # 从原始回复中移除思考部分
+                original_response = response
                 response = remove_thinking_from_response(response, thinking)
                 logger.debug(f"✅ 成功提取思考过程，长度: {len(thinking)} 字符")
                 logger.debug(f"思考过程预览: {thinking[:200]}..." if len(thinking) > 200 else f"思考过程: {thinking}")
+                logger.debug(f"提取后的回答长度: {len(response)} 字符")
+                logger.debug(f"提取后的回答预览: {response[:200]}..." if len(response) > 200 else f"提取后的回答: {response}")
+                # 如果提取后的回答太短或为空，可能是提取错误，保留原回复
+                if len(response) < 10 or not response.strip():
+                    logger.warning("⚠️ 提取后的回答太短，可能提取错误，保留原回复")
+                    response = original_response
+                    thinking = None
             else:
                 logger.warning("⚠️ 未找到思考过程，返回完整回复")
                 logger.debug(f"完整回复内容: {response}")
@@ -433,7 +522,13 @@ async def chat(request: ChatRequest):
                 thinking = extract_thinking_relaxed(response)
                 if thinking:
                     logger.info(f"✅ 使用宽松模式成功提取思考过程，长度: {len(thinking)} 字符")
+                    original_response = response
                     response = remove_thinking_from_response(response, thinking)
+                    # 如果提取后的回答太短或为空，可能是提取错误，保留原回复
+                    if len(response) < 10 or not response.strip():
+                        logger.warning("⚠️ 宽松模式提取后的回答太短，可能提取错误，保留原回复")
+                        response = original_response
+                        thinking = None
         
         # 保存对话历史
         conversation_manager.add_message(session_id, request.message, response)
@@ -456,6 +551,134 @@ async def chat(request: ChatRequest):
         logger.error(f"错误堆栈:\n{traceback.format_exc()}")
         logger.info("=" * 60)
         raise HTTPException(status_code=500, detail=error_msg)
+
+
+@app.post("/api/chat/stream")
+async def chat_stream(request: ChatRequest):
+    """
+    流式聊天端点（SSE），支持两阶段生成：先生成思考过程，再生成正式回答
+    
+    Args:
+        request: 聊天请求
+        
+    Yields:
+        SSE 格式的流式响应
+    """
+    import time
+    global model_loaded
+    
+    if not model_loaded:
+        raise HTTPException(status_code=503, detail="模型未加载，请稍后重试")
+    
+    session_id = request.session_id or str(uuid.uuid4())
+    history = conversation_manager.get_history(session_id)
+    
+    def generate():
+        try:
+            system_prompt = PromptBuilder.get_system_prompt()
+            
+            # 第一阶段：生成思考过程
+            if request.use_chain_of_thought:
+                thinking_text = ""
+                try:
+                    # 发送开始思考的信号
+                    yield f"data: {json.dumps({'type': 'thinking_start'})}\n\n"
+                    
+                    # 生成思考过程（流式，不使用 system_prompt，但需要传入会话历史）
+                    for chunk in model_manager.generate_thinking_stream(
+                        prompt=request.message,
+                        history=history,  # 所有模型都需要传入会话历史，以便思考过程能分析话题转换等
+                        system_prompt=None  # 思考过程不使用 system_prompt
+                    ):
+                        thinking_text += chunk
+                        # 发送思考过程片段
+                        yield f"data: {json.dumps({'type': 'thinking', 'content': chunk})}\n\n"
+                    
+                    # 清理思考过程（移除可能的标记等）
+                    thinking_text = thinking_text.strip()
+                    # 移除可能的"思考过程："标记（如果模型输出了）
+                    if thinking_text.startswith("**思考过程：**"):
+                        thinking_text = thinking_text[len("**思考过程：**"):].strip()
+                    elif thinking_text.startswith("思考过程："):
+                        thinking_text = thinking_text[len("思考过程："):].strip()
+                    elif thinking_text.startswith("思考过程如下"):
+                        thinking_text = thinking_text[len("思考过程如下"):].strip()
+                    # 移除可能的"正式回答："标记（如果模型输出了）
+                    if "**正式回答：**" in thinking_text:
+                        thinking_text = thinking_text.split("**正式回答：**")[0].strip()
+                    elif "正式回答：" in thinking_text:
+                        thinking_text = thinking_text.split("正式回答：")[0].strip()
+                    
+                    # 发送思考完成信号
+                    yield f"data: {json.dumps({'type': 'thinking_complete', 'content': thinking_text})}\n\n"
+                    
+                    # 第二阶段：生成正式回答
+                    yield f"data: {json.dumps({'type': 'answer_start'})}\n\n"
+                    
+                    answer_text = ""
+                    for chunk in model_manager.generate_answer_stream(
+                        prompt=request.message,
+                        thinking=thinking_text,
+                        history=history if "chatglm" in model_manager.model_name.lower() else None,
+                        system_prompt=system_prompt if "chatglm" not in model_manager.model_name.lower() else None
+                    ):
+                        answer_text += chunk
+                        # 发送回答片段
+                        yield f"data: {json.dumps({'type': 'answer', 'content': chunk})}\n\n"
+                    
+                    # 清理回答（移除标记等）
+                    answer_text = answer_text.strip()
+                    if answer_text.startswith("**正式回答：**"):
+                        answer_text = answer_text[len("**正式回答：**"):].strip()
+                    
+                    # 保存对话历史
+                    conversation_manager.add_message(session_id, request.message, answer_text)
+                    
+                    # 发送完成信号
+                    yield f"data: {json.dumps({'type': 'complete', 'thinking': thinking_text, 'answer': answer_text, 'session_id': session_id})}\n\n"
+                    
+                except Exception as e:
+                    import traceback
+                    logger.error(f"流式生成错误: {str(e)}")
+                    logger.error(f"错误堆栈:\n{traceback.format_exc()}")
+                    yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+            else:
+                # 不使用思考链路，直接生成回答
+                yield f"data: {json.dumps({'type': 'answer_start'})}\n\n"
+                
+                answer_text = ""
+                # 使用原有的生成方法，但需要改为流式
+                # 这里简化处理，直接调用 generate_response 然后流式返回
+                response = model_manager.generate_response(
+                    prompt=request.message,
+                    history=history if "chatglm" in model_manager.model_name.lower() else None,
+                    use_chain_of_thought=False,
+                    system_prompt=system_prompt if "chatglm" not in model_manager.model_name.lower() else None
+                )
+                
+                # 模拟流式输出
+                for char in response:
+                    answer_text += char
+                    yield f"data: {json.dumps({'type': 'answer', 'content': char})}\n\n"
+                
+                conversation_manager.add_message(session_id, request.message, answer_text)
+                yield f"data: {json.dumps({'type': 'complete', 'answer': answer_text, 'session_id': session_id})}\n\n"
+                
+        except Exception as e:
+            import traceback
+            logger.error(f"流式生成错误: {str(e)}")
+            logger.error(f"错误堆栈:\n{traceback.format_exc()}")
+            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+    
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
 
 
 @app.get("/api/config", response_model=ConfigResponse)

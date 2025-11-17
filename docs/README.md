@@ -57,6 +57,135 @@ QUANTIZATION_BITS = 8
 
 **注意**：首次运行会自动从 Hugging Face 下载模型，需要较长时间和足够的磁盘空间。
 
+### 模型存储位置
+
+模型文件会自动下载并缓存在以下位置：
+- **macOS/Linux**: `~/.cache/huggingface/hub/`
+- **Windows**: `C:\Users\<用户名>\.cache\huggingface\hub\`
+
+模型下载后会被永久缓存，后续运行会直接使用本地缓存，无需重新下载。
+
+#### 手动下载模型
+
+如果需要手动下载模型（例如网络环境限制、使用镜像源等），可以按照以下步骤操作：
+
+**1. 确定模型存储目录**
+
+模型会按照 Hugging Face 的命名规则存储在以下目录结构中：
+
+```
+~/.cache/huggingface/hub/
+└── models--<组织名>--<模型名>/
+    ├── snapshots/
+    │   └── <版本哈希>/
+    │       ├── config.json
+    │       ├── tokenizer.json
+    │       ├── tokenizer_config.json
+    │       ├── model.safetensors 或 model.bin
+    │       └── ... (其他模型文件)
+    └── refs/
+        └── main -> snapshots/<版本哈希>
+```
+
+**示例**：对于模型 `Qwen/Qwen2-0.5B-Instruct`，目录结构为：
+
+```
+~/.cache/huggingface/hub/
+└── models--Qwen--Qwen2-0.5B-Instruct/
+    ├── snapshots/
+    │   └── <版本哈希>/
+    │       ├── config.json
+    │       ├── tokenizer.json
+    │       ├── tokenizer_config.json
+    │       ├── model.safetensors
+    │       └── ... (其他文件)
+    └── refs/
+        └── main -> snapshots/<版本哈希>
+```
+
+**2. 下载模型文件**
+
+可以使用以下方法下载：
+
+**方法 A：使用 `huggingface-cli`（推荐）**
+
+```bash
+# 安装 huggingface_hub
+pip install huggingface_hub
+
+# 下载模型到默认缓存目录（推荐）
+huggingface-cli download Qwen/Qwen2-0.5B-Instruct
+
+# 或者指定缓存目录
+huggingface-cli download Qwen/Qwen2-0.5B-Instruct --cache-dir ~/.cache/huggingface/hub
+```
+
+**方法 B：使用 Python 脚本**
+
+```python
+from huggingface_hub import snapshot_download
+
+snapshot_download(
+    repo_id="Qwen/Qwen2-0.5B-Instruct",
+    cache_dir="~/.cache/huggingface/hub"
+)
+```
+
+**方法 C：使用镜像源（国内用户推荐）**
+
+```bash
+# 设置镜像环境变量
+export HF_ENDPOINT=https://hf-mirror.com
+
+# 然后使用 huggingface-cli 下载
+huggingface-cli download Qwen/Qwen2-0.5B-Instruct
+```
+
+**方法 D：手动从 Hugging Face 网站下载**
+
+1. 访问模型页面（如：https://huggingface.co/Qwen/Qwen2-0.5B-Instruct）
+2. 下载所有必需的文件（`config.json`、`tokenizer.json`、`model.safetensors` 等）
+3. 按照上述目录结构放置文件
+
+**3. 验证模型是否正确放置**
+
+下载完成后，可以通过以下方式验证：
+
+```bash
+# 检查目录是否存在
+ls -la ~/.cache/huggingface/hub/models--Qwen--Qwen2-0.5B-Instruct/
+
+# 检查关键文件是否存在
+ls -la ~/.cache/huggingface/hub/models--Qwen--Qwen2-0.5B-Instruct/snapshots/*/config.json
+ls -la ~/.cache/huggingface/hub/models--Qwen--Qwen2-0.5B-Instruct/snapshots/*/model.safetensors
+```
+
+**注意事项**：
+- 确保所有必需的文件都已下载（至少包括 `config.json`、`tokenizer.json`、`tokenizer_config.json` 和模型权重文件）
+- 如果使用手动下载，需要确保目录结构正确，否则模型加载可能失败
+- 建议使用 `huggingface-cli` 或 Python API 下载，可以自动处理目录结构和文件完整性
+
+### 离线运行
+
+如果需要在离线环境下运行（无网络连接），可以启用离线模式：
+
+**方法 1：环境变量**
+```bash
+export USE_OFFLINE_MODE=true
+python -m app.main
+```
+
+**方法 2：修改配置文件**
+编辑 `config/model_config.py`：
+```python
+USE_OFFLINE_MODE = True  # 启用离线模式
+```
+
+**注意事项**：
+- 离线模式要求模型已经下载过（在缓存目录中）
+- 如果模型未下载，离线模式会失败并报错
+- 首次使用前需要联网下载模型，之后可以离线运行
+
 ### 3. 运行服务
 
 ```bash
@@ -201,6 +330,16 @@ A: 修改 `config/model_config.py` 中的 `MODEL_NAME` 变量，然后重启服�
 ### Q: 支持 GPU 加速吗？
 
 A: 支持。如果检测到 CUDA，会自动使用 GPU 加速。
+
+### Q: 模型存储在哪里？离线能运行吗？
+
+A: 模型存储在 `~/.cache/huggingface/hub/`（macOS/Linux）或 `C:\Users\<用户名>\.cache\huggingface\hub\`（Windows）。
+
+模型下载后会被缓存，**可以离线运行**。启用离线模式：
+- 环境变量：`export USE_OFFLINE_MODE=true`
+- 或修改 `config/model_config.py` 中的 `USE_OFFLINE_MODE = True`
+
+注意：首次使用需要联网下载模型，之后可以离线运行。
 
 ## 开发计划
 

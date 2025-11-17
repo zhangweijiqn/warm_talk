@@ -9,6 +9,12 @@ import os
 
 MODEL_NAME = os.getenv("MODEL_NAME", "Qwen/Qwen2-0.5B-Instruct")  # 默认使用 Qwen2-0.5B（非常小，适合CPU）
 
+# ==================== 离线模式配置 ====================
+# 如果设置为 True，将只使用本地缓存的模型，不会尝试从网络下载
+# 适用于：离线环境、网络不稳定、或想强制使用本地模型
+# 注意：如果模型未下载，离线模式会失败
+USE_OFFLINE_MODE = os.getenv("USE_OFFLINE_MODE", "false").lower() == "true"  # 默认 False（允许网络下载）
+
 # 其他可选模型（按参数大小和速度从快到慢）：
 # === 超小模型（推荐用于CPU，速度快）===
 # "Qwen/Qwen2-0.5B-Instruct" - Qwen2 0.5B（推荐，最小最快，兼容旧版本 transformers）
@@ -59,6 +65,14 @@ GENERATION_CONFIG = {
 MAX_HISTORY_LENGTH = 10  # 最大历史对话轮数（保留多少轮历史对话）
 MAX_CONTEXT_LENGTH = 2048  # 最大上下文长度（tokens）
 SAVE_ONLY_USER_MESSAGES = os.getenv("SAVE_ONLY_USER_MESSAGES", "true").lower() == "true"  # 是否仅保存用户问题（不保存助手回复）
+
+# ==================== 提示词配置 ====================
+
+# 提示词版本：simple（简洁版，默认，适合小模型）或 detailed（详细版，适合大模型）
+# 简洁版：要求更少，更容易执行，适合 0.5B-3B 的小模型
+# 详细版：要求更详细，功能更全面，适合 6B+ 的大模型
+# 使用方式：export PROMPT_VERSION=detailed  # 切换到详细版
+PROMPT_VERSION = os.getenv("PROMPT_VERSION", "simple").lower()  # simple 或 detailed
 
 
 # ==================== 设备优化配置 ====================
