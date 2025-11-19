@@ -1,4 +1,4 @@
-# WarmTalk
+# WarmTalk - Simple 
 
 一个参照 DeepSeek 设计的智能对话系统，支持思考链路（Chain of Thought）和高情商对话风格。
 
